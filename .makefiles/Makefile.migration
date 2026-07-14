@@ -1,0 +1,80 @@
+MIGRATION_FOLDER    ?= "./migrations"
+ATLAS_CHECKSUM_FILE ?= "./migrations/atlas.sum"
+
+# Helper to check and install Atlas if needed
+define ensure_atlas
+	@if ! command -v atlas &> /dev/null; then \
+		echo "⚠️  Atlas CLI not found. Installing..."; \
+		curl -sSf https://atlasgo.sh | sh; \
+		if ! command -v atlas &> /dev/null; then \
+			echo "❌ Atlas installation failed. Please install manually: https://atlasgo.io/getting-started"; \
+			exit 1; \
+		fi; \
+		echo "✓ Atlas installed successfully"; \
+	fi
+endef
+
+# Helper to ensure migrate binary is built
+define ensure_migrate_binary
+	@if [ ! -f "./bin/migrate" ]; then \
+		echo "Building migrate binary..."; \
+		mkdir -p bin/; \
+		go build -tags migration -o bin/migrate ./cmd/migrate; \
+	fi
+endef
+
+migration.gen: ## Generate migration using script (no database required) (`make migration.gen desc="..."`)
+	@if [ -z "$$desc" ]; then \
+		read -p "Enter migration description: " desc; \
+	fi; \
+	./scripts/generate-migration.sh "$$desc"
+
+migration: _ensure_atlas _ensure_migrate_binary ## Generate a new migration from the entities using Atlas (`make migration desc="..."`)
+	@if [ -z "$$desc" ]; then \
+		read -p "Enter migration description: " desc; \
+	fi; \
+	desc="$$(echo $${desc} | /usr/bin/tr '[A-Z] ' '[a-z]_' | sed -E 's/[^a-z0-9_-]//g;s/^_+//;s/_+$$//')"; \
+	atlas migrate diff --env local "$$desc"
+
+migration.new: _ensure_atlas _ensure_migrate_binary ## Generate a new empty migration (`make migration.new desc="..."` to specify a description)
+	@if [ -z "$$desc" ]; then \
+		read -p "Enter migration description: " desc; \
+	fi; \
+	desc="$$(echo $${desc} | /usr/bin/tr '[A-Z] ' '[a-z]_' | sed -E 's/[^a-z0-9_-]//g;s/^_+//;s/_+$$//')"; \
+	atlas migrate new --env local "$$desc"
+
+migration.recreate: _migration.delete_latest migration.gen ## Recreate the latest migration (`make migration.recreate desc="..."` to specify a description)
+
+migration.apply: _ensure_atlas ## Apply all pending migrations to the database
+	atlas migrate apply --env local
+
+migration.status: _ensure_atlas ## Show the status of migrations
+	atlas migrate status --env local
+
+migration.rollback: _ensure_atlas ## Rollback the latest migration (caution: use with care)
+	@echo "⚠️  This will rollback the latest migration. Make sure you have a backup."
+	@read -p "Are you sure? (yes/no): " confirm; \
+	if [ "$$confirm" = "yes" ]; then \
+		atlas migrate down --env local --amount 1; \
+	else \
+		echo "Rollback cancelled."; \
+	fi;
+
+_ensure_atlas:
+	$(call ensure_atlas)
+
+_ensure_migrate_binary:
+	$(call ensure_migrate_binary)
+
+_migration.delete_latest:
+	@LATEST_MIGRATION_FILE=$$(ls $(MIGRATION_FOLDER)/*.sql 2>/dev/null | grep -v atlas.sum | sort -t '_' -k1,1 | tail -n 1); \
+	if [ -n "$${LATEST_MIGRATION_FILE}" ]; then \
+		echo "Deleting latest migration file: $${LATEST_MIGRATION_FILE}"; \
+		rm "$${LATEST_MIGRATION_FILE}"; \
+		echo "Deleted latest migration file: $${LATEST_MIGRATION_FILE}"; \
+		atlas migrate hash || true; \
+	else \
+		echo "No migration files found."; \
+	fi
+
+.PHONY: migration migration.gen migration.new migration.recreate migration.apply migration.status migration.rollback _ensure_atlas _ensure_migrate_binary _migration.delete_latest
