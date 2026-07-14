@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: rbrband_postgres
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-postgres.sh:/docker-entrypoint-initdb.d/init-postgres.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rbrband_network
+
+  login:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: login
+    container_name: rbrband_login
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable"
+      TIMEOUT_SEC: ${TIMEOUT_SEC}
+    ports:
+      - "8080:8080"
+    networks:
+      - rbrband_network
+
+  gigworker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: gigworker
+    container_name: rbrband_gigworker
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable"
+      TIMEOUT_SEC: ${TIMEOUT_SEC}
+    ports:
+      - "8081:8081"
+    networks:
+      - rbrband_network
+
+volumes:
+  postgres_data:
+
+networks:
+  rbrband_network:
+    driver: bridge
